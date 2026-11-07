@@ -629,9 +629,11 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             # 免费三市场宽度源优先：东财 push2delay + TickFlow 免费服务器，
             # 海外可达、无需任何 Key。失败才回退项目自带链（该链常因 302/限流返回空）。
             stats = None
+            free_available = False
             try:
                 from data_provider.free_breadth import get_breadth
                 free_stats = get_breadth(self.region)
+                free_available = True
                 if free_stats and (free_stats.get("up_count") or free_stats.get("down_count")
                                    or free_stats.get("total_amount")):
                     stats = free_stats
@@ -639,9 +641,14 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                         "[大盘] %s action=get_market_stats source=free_breadth region=%s status=success",
                         self._log_context(), self.region,
                     )
+                else:
+                    logger.warning("[大盘] free_breadth empty region=%s, skip legacy chain", self.region)
             except Exception as free_exc:
                 logger.warning("[大盘] free_breadth unavailable: %s", free_exc)
-            if not stats:
+            # 仅当免费源模块本身不可用时才回退项目自带链。该链在 GitHub Actions
+            # 海外环境始终超时/返回空（每次耗时 60~150s），在 full 模式下会加剧
+            # 对免费源的限流，故免费源可用时不再回退，让整轮更快、成功率更高。
+            if not free_available and not stats:
                 stats = self.data_manager.get_market_stats(purpose=f"market_review:{self.region}")
 
             if stats:
