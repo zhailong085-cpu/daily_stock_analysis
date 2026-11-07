@@ -241,17 +241,31 @@ def _em_paged_breadth(region: str, max_pages: int = 160) -> Optional[Dict]:
     }
 
 
+# 进程内缓存：full 模式下大盘复盘会被每只个股重复触发（实测单次运行每 region 2 次、
+# 合计 6 次），免费源在高频请求下被限流返回全 0。成功的 region 只取一次数，
+# 后续调用直接命中缓存；失败不缓存，保留下一次补救机会。
+# 每次 Actions 运行都是新进程，缓存随运行结束失效，绝不会用到隔夜旧数据。
+_BREADTH_CACHE: Dict[str, Dict[str, Any]] = {}
+_SECTOR_CACHE: Dict[str, Tuple[List[Dict], List[Dict]]] = {}
+
+
 def get_breadth(region: str = "cn") -> Dict[str, Any]:
     """返回对齐项目 MarketOverview 的市场宽度；任何失败都返回全 0，不阻断主流程。"""
+    cached = _BREADTH_CACHE.get(region)
+    if cached:
+        return dict(cached)
     try:
         if region == "cn":
             data = _cn_breadth()
         else:
             data = _tf_breadth(region) or _em_paged_breadth(region)
-        return data or dict(EMPTY)
+        result = data or dict(EMPTY)
     except Exception as exc:
         logger.warning("[free_breadth] region=%s failed: %s", region, exc)
-        return dict(EMPTY)
+        result = dict(EMPTY)
+    if result.get("up_count") or result.get("down_count") or result.get("total_amount"):
+        _BREADTH_CACHE[region] = dict(result)
+    return result
 
 
 # ------------------------------------------------------------ 板块涨跌榜
@@ -291,22 +305,28 @@ def _us_sectors(n: int) -> Tuple[List[Dict], List[Dict]]:
 
 def get_sector_rankings(region: str = "cn", n: int = 5) -> Tuple[List[Dict], List[Dict]]:
     """返回 (领涨板块, 领跌板块)；港美股无涨跌停制度，仅 A 股有行业板块。"""
+    cache_key = f"{region}:{n}"
+    cached = _SECTOR_CACHE.get(cache_key)
+    if cached:
+        return list(cached[0]), list(cached[1])
     try:
         if region == "us":
-            return _us_sectors(n)
-        if region == "hk":
-            # 东财港股「板块」里混有大量衍生/策略指数（2 倍短仓、备兑、波幅等），
-            # 过滤掉，只保留可解读的行业/主题；宁可留空也不展示误导性名称。
+            result = _us_sectors(n)
+        elif region == "hk":
             bad = ("指数", "期货", "备兑", "短仓", "波幅", "反向", "杠杆",
                    "NTR", "2倍", "杠杆", "对冲")
             def clean(items):
                 return [x for x in items if not any(k in x["name"] for k in bad)][:n]
-            return (clean(_em_sectors(HK_SECTOR_FS, n * 5, 1)),
-                    clean(_em_sectors(HK_SECTOR_FS, n * 5, 0)))
-        return _em_sectors(CN_SECTOR_FS, n, 1), _em_sectors(CN_SECTOR_FS, n, 0)
+            result = (clean(_em_sectors(HK_SECTOR_FS, n * 5, 1)),
+                      clean(_em_sectors(HK_SECTOR_FS, n * 5, 0)))
+        else:
+            result = (_em_sectors(CN_SECTOR_FS, n, 1), _em_sectors(CN_SECTOR_FS, n, 0))
     except Exception as exc:
         logger.warning("[free_breadth] sectors region=%s failed: %s", region, exc)
         return [], []
+    if result[0] or result[1]:
+        _SECTOR_CACHE[cache_key] = (list(result[0]), list(result[1]))
+    return result
 
 
 if __name__ == "__main__":
