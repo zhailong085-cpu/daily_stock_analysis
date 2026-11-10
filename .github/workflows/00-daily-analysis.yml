@@ -1,7 +1,11 @@
 name: 每日股票分析
 
 on:
-  # 定时触发 - 每天北京时间 18:23 (UTC 10:23)，避开整点高峰
+  # 定时触发 - 工作日北京时间 18:23 (UTC 10:23)，避开整点高峰
+  # 【时间闸门】下方「执行股票分析」步骤会校验北京时间：仅 16:00-22:59 才真正运行并推送。
+  # GitHub 免费版定时任务在高峰期可能排队数小时，实测曾延后到次日凌晨；闸门会拦下
+  # 这类运行，避免凌晨推送与「标题写成次日、数据却是前一日」的日期错位。
+  # 若某天没收到报告，在 Actions 页面手动 Run workflow 补跑即可（手动触发不受时段限制）。
   schedule:
     - cron: '23 10 * * 1-5'    # 周一到周五，UTC 10:23 = 北京时间 18:23
   
@@ -452,6 +456,22 @@ jobs:
           REALTIME_SOURCE_PRIORITY: ${{ vars.REALTIME_SOURCE_PRIORITY || 'tencent,akshare_sina,efinance,akshare_em' }}
           
         run: |
+          # ===== 推送时间闸门（仅对定时触发生效）=====
+          BJ_HOUR=$((10#$(TZ='Asia/Shanghai' date +%H)))
+          BJ_NOW=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M %Z')
+          echo "⏰ 当前北京时间: $BJ_NOW"
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            if [ "$BJ_HOUR" -lt 16 ] || [ "$BJ_HOUR" -ge 23 ]; then
+              echo "⏭ 非推送窗口（仅北京时间 16:00-22:59），跳过本次运行：避免凌晨/隔夜推送与日期错位。"
+              echo "   若某天没收到报告，请在 Actions 页面手动 Run workflow 补跑（手动触发不受时段限制）。"
+              exit 0
+            fi
+            echo "✅ 位于推送窗口（16:00-22:59），继续执行"
+          else
+            echo "🖐 手动触发，放行时间闸门"
+          fi
+          # ==========================================
+
           # 解析自选股配置：
           # 1. Repository/Environment secrets 或 Repository variables（STOCK_LIST_CONFIG）
           # 2. 同名 Environment variables 注入的 runner 环境变量（STOCK_LIST）
